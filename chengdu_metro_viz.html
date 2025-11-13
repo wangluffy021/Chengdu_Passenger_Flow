@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>成都地铁客流量可视化（实时跟随虚线）</title>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-zoom@2.0.1"></script>
+    <script src="https://cdn.sheetjs.com/xlsx-latest/package/dist/xlsx.full.min.js"></script>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        #chart-container { width: 100%; max-width: 1200px; height: 600px; margin: auto; position: relative; }
+        #upload-section { text-align: center; margin-bottom: 20px; }
+    </style>
+</head>
+<body>
+    <h1 id="chart-title">成都地铁客流量折线图（请上传Excel文件）</h1>
+    <p>每日客流量（蓝色线）和 7 日移动平均（红色线）。悬停查看详情，支持缩放和拖拽。</p>
+    <div id="upload-section">
+        <input type="file" id="fileInput" accept=".xlsx">
+    </div>
+    <div id="chart-container">
+        <canvas id="metroChart"></canvas>
+    </div>
+
+    <script>
+        // 初始化空图表
+        const ctx = document.getElementById('metroChart').getContext('2d');
+        const chart = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: [],
+                datasets: [
+                    {
+                        label: '每日客流量 (万)',
+                        data: [],
+                        borderColor: 'blue',
+                        backgroundColor: 'rgba(0, 0, 255, 0.1)',
+                        fill: false,
+                        tension: 0.1
+                    },
+                    {
+                        label: '7日移动平均 (万)',
+                        data: [],
+                        borderColor: 'red',
+                        backgroundColor: 'rgba(255, 0, 0, 0.1)',
+                        fill: false,
+                        tension: 0.1
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    x: {
+                        title: { display: true, text: '日期' },
+                        ticks: { autoSkip: true, maxTicksLimit: 20 }
+                    },
+                    y: {
+                        title: { display: true, text: '客流量 (万)' },
+                        beginAtZero: false
+                    }
+                },
+                plugins: {
+                    tooltip: {
+                        mode: 'index',
+                        intersect: false,
+                        callbacks: {
+                            label: function(context) {
+                                return `${context.dataset.label}: ${context.raw.toFixed(1)}`;
+                            },
+                            afterLabel: function(context) {
+                                if (context.datasetIndex === 0) {
+                                    const index = context.dataIndex;
+                                    const weekday = data.weekday[index];
+                                    const change = (data.change[index] * 100).toFixed(2) + '%';
+                                    return [
+                                        `星期: ${weekday}`,
+                                        `同比上周: ${change}`
+                                    ];
+                                } else {
+                                    return '';
+                                }
+                            }
+                        }
+                    },
+                    zoom: {
+                        zoom: {
+                            wheel: { enabled: true },
+                            pinch: { enabled: true },
+                            mode: 'x'
+                        },
+                        pan: {
+                            enabled: true,
+                            mode: 'x'
+                        }
+                    },
+                    legend: { display: true }
+                },
+                interaction: {
+                    mode: 'index',
+                    intersect: false
+                },
+                hover: {
+                    mode: 'index',
+                    intersect: false
+                },
+                animation: false // 禁用动画以避免闪烁
+            }
+        });
+
+        // 数据对象
+        let data = { dates: [], daily: [], avg7: [], change: [], weekday: [] };
+
+        // 自定义插件：实时绘制垂直跟随线
+        const verticalLinePlugin = {
+            id: 'verticalLine',
+            afterDraw: function(chart) {
+                if (chart.tooltip?._active?.length) {
+                    const activePoint = chart.tooltip._active[0];
+                    const { x } = activePoint.element;
+                    const topY = chart.scales.y.top;
+                    const bottomY = chart.scales.y.bottom;
+
+                    const ctx = chart.ctx;
+                    ctx.save();
+                    ctx.strokeStyle = 'rgba(0, 0, 0, 0.4)';
+                    ctx.lineWidth = 2;
+                    ctx.setLineDash([6, 4]);
+                    ctx.beginPath();
+                    ctx.moveTo(x, topY);
+                    ctx.lineTo(x, bottomY);
+                    ctx.stroke();
+                    ctx.restore();
+                }
+            }
+        };
+
+        // 注册插件
+        Chart.register(verticalLinePlugin);
+
+        // 文件上传事件
+        document.getElementById('fileInput').addEventListener('change', function(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+
+            const reader = new FileReader();
+            reader.onload = function(e) {
+                const arrayBuffer = e.target.result;
+                const workbook = XLSX.read(arrayBuffer, { type: 'array' });
+                const sheetName = workbook.SheetNames[0];
+                const worksheet = workbook.Sheets[sheetName];
+                const jsonData = XLSX.utils.sheet_to_json(worksheet, { header: 1, raw: true });
+
+                if (jsonData.length < 2) {
+                    alert('文件格式错误：无数据行');
+                    return;
+                }
+
+                data.dates = [];
+                data.weekday = [];
+                data.daily = [];
+                data.change = [];
+                data.avg7 = [];
+
+                for (let i = 1; i < jsonData.length; i++) {
+                    const row = jsonData[i];
+                    if (row.length < 5) continue;
+
+                    const excelDate = Number(row[0]);
+                    const jsDate = new Date((excelDate - 25569) * 86400 * 1000);
+                    data.dates.push(jsDate.toISOString().split('T')[0]);
+
+                    data.weekday.push(row[1]);
+                    data.daily.push(parseFloat(row[2]));
+                    data.change.push(parseFloat(row[3]));
+                    data.avg7.push(parseFloat(row[4]));
+                }
+
+                if (data.dates.length === 0) {
+                    alert('文件格式错误：无有效数据');
+                    return;
+                }
+
+                const startDate = data.dates[0];
+                const endDate = data.dates[data.dates.length - 1];
+                document.getElementById('chart-title').textContent = `成都地铁客流量折线图（${startDate} 至 ${endDate}）`;
+
+                chart.data.labels = data.dates;
+                chart.data.datasets[0].data = data.daily;
+                chart.data.datasets[1].data = data.avg7;
+                chart.update('none'); // 无动画更新
+            };
+            reader.readAsArrayBuffer(file);
+        });
+    </script>
+</body>
+</html>
